@@ -6,6 +6,8 @@ import productsRoutes from "./routes/products";
 import stockRoutes from "./routes/stock";
 import salesRoutes from "./routes/sales";
 import authRoutes from "./routes/auth";
+import cashRoutes from "./routes/cash";
+
 
 dotenv.config();
 
@@ -21,6 +23,8 @@ app.use("/stock", stockRoutes);
 app.use("/sales", salesRoutes);
 
 app.use("/auth", authRoutes);
+
+app.use("/cash", cashRoutes);
 
 // Rota de teste
 app.get("/health", (req, res) => {

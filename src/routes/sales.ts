@@ -45,7 +45,27 @@ router.post(
     total,
     storeId: req.user!.storeId
   }
+
+  
 });
+
+const cash = await tx.cashRegister.findFirst({
+  where: {
+    storeId: req.user!.storeId,
+    closedAt: null
+  }
+});
+
+if (cash) {
+  await tx.cashRegister.update({
+    where: { id: cash.id },
+    data: {
+      sales: {
+        increment: total
+      }
+    }
+  });
+}
 
       for (const item of items) {
         const product = await tx.product.findUnique({
@@ -359,6 +379,84 @@ return res.json(result);
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: "Erro ao gerar ranking otimizado" });
+    }
+  }
+);
+
+router.post(
+  "/:id/cancel",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const saleId = String(req.params.id);
+
+      const result = await prisma.$transaction(async (tx) => {
+
+        const sale = await tx.sale.findFirst({
+  where: {
+    id: saleId,
+    storeId: req.user!.storeId
+  },
+  include: {
+    items: true
+  }
+});
+
+        if (!sale) {
+          throw new Error("Venda não encontrada");
+        }
+
+        if (sale.status === "CANCELLED") {
+          throw new Error("Venda já cancelada");
+        }
+
+        // devolver estoque
+        for (const item of sale.items) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: {
+              stock: {
+                increment: item.quantity
+              }
+            }
+          });
+        }
+
+        // reduzir vendas do caixa
+        const cash = await tx.cashRegister.findFirst({
+          where: {
+            storeId: req.user!.storeId,
+            closedAt: null
+          }
+        });
+
+        if (cash) {
+          await tx.cashRegister.update({
+            where: { id: cash.id },
+            data: {
+              sales: {
+                decrement: sale.total
+              }
+            }
+          });
+        }
+
+        // marcar venda cancelada
+        const cancelled = await tx.sale.update({
+          where: { id: sale.id },
+          data: {
+            status: "CANCELLED"
+          }
+        });
+
+        return cancelled;
+
+      });
+
+      return res.json(result);
+
+    } catch (error:any) {
+      return res.status(400).json({ error: error.message });
     }
   }
 );

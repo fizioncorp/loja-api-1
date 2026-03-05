@@ -46,6 +46,7 @@ model Sale {
   createdAt DateTime @default(now())
 
   items     SaleItem[]
+  status String @default("COMPLETED")
 }
 
 model SaleItem {
@@ -67,6 +68,8 @@ model Store {
   users     User[]
   products  Product[]
   sales     Sale[]
+  
+  cashRegisters CashRegister[]
 }
 
 model User {
@@ -78,4 +81,15 @@ model User {
   createdAt DateTime @default(now())
 
   store     Store    @relation(fields: [storeId], references: [id])
+}
+
+model CashRegister {
+  id        String   @id @default(uuid())
+  storeId   String
+  openedAt  DateTime @default(now())
+  closedAt  DateTime?
+  initial   Float
+  sales     Float    @default(0)
+
+  store Store @relation(fields: [storeId], references: [id])
 }
