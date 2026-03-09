@@ -14,32 +14,36 @@ model Product {
   price     Float
   cost      Float
   stock     Int      @default(0)
-  active Boolean @default(true)
+  active    Boolean  @default(true)
   createdAt DateTime @default(now())
 
   movements StockMovement[]
   saleItems SaleItem[]
 
   storeId String
-  store   Store @relation(fields: [storeId], references: [id])
+  store   Store  @relation(fields: [storeId], references: [id])
 }
 
 model StockMovement {
-  id        String   @id @default(uuid())
-  productId String
+  id        String @id @default(cuid())
   storeId   String
+  productId String
   userId    String
-  type      String
-  quantity  Int
-  reason    String?
+
+  type     MovementType
+  quantity Int
+
   createdAt DateTime @default(now())
 
   product Product @relation(fields: [productId], references: [id])
+  store   Store   @relation(fields: [storeId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
 }
 
 enum MovementType {
   IN
   OUT
+  ADJUSTMENT
 }
 
 model Sale {
@@ -49,19 +53,20 @@ model Sale {
   store     Store    @relation(fields: [storeId], references: [id])
   createdAt DateTime @default(now())
 
-  items     SaleItem[]
-  status String @default("COMPLETED")
+  items  SaleItem[]
+  payments Payment[]
+  status String     @default("COMPLETED")
 }
 
 model SaleItem {
-  id        String   @id @default(uuid())
+  id        String @id @default(uuid())
   saleId    String
   productId String
   quantity  Int
   price     Float
 
-  sale      Sale     @relation(fields: [saleId], references: [id])
-  product   Product  @relation(fields: [productId], references: [id])
+  sale    Sale    @relation(fields: [saleId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
 }
 
 model Store {
@@ -69,11 +74,12 @@ model Store {
   name      String
   createdAt DateTime @default(now())
 
-  users     User[]
-  products  Product[]
-  sales     Sale[]
-  
+  users    User[]
+  products Product[]
+  sales    Sale[]
+
   cashRegisters CashRegister[]
+  StockMovement StockMovement[]
 }
 
 model User {
@@ -84,16 +90,35 @@ model User {
   storeId   String
   createdAt DateTime @default(now())
 
-  store     Store    @relation(fields: [storeId], references: [id])
+  store         Store           @relation(fields: [storeId], references: [id])
+  StockMovement StockMovement[]
 }
 
 model CashRegister {
-  id        String   @id @default(uuid())
-  storeId   String
-  openedAt  DateTime @default(now())
-  closedAt  DateTime?
-  initial   Float
-  sales     Float    @default(0)
+  id       String    @id @default(uuid())
+  storeId  String
+  openedAt DateTime  @default(now())
+  closedAt DateTime?
+  initial  Float
+  sales    Float     @default(0)
 
   store Store @relation(fields: [storeId], references: [id])
 }
+
+
+enum PaymentMethod {
+  PIX
+  CASH
+  CARD
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  saleId    String
+  method    PaymentMethod
+  amount    Decimal
+  createdAt DateTime @default(now())
+
+  sale Sale @relation(fields: [saleId], references: [id])
+}
+

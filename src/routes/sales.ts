@@ -82,12 +82,14 @@ if (cash) {
         });
 
         await tx.stockMovement.create({
-          data: {
-            productId: item.productId,
-            type: "OUT",
-            quantity: item.quantity
-          }
-        });
+  data: {
+    productId: item.productId,
+    storeId: req.user!.storeId,
+    userId: req.user!.userId,
+    type: "OUT",
+    quantity: item.quantity
+  }
+});
 
         await tx.product.update({
           where: { id: item.productId },
@@ -460,5 +462,7 @@ router.post(
     }
   }
 );
+
+
 
 export default router;
