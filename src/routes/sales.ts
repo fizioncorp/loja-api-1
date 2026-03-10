@@ -1,33 +1,35 @@
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
 import { authMiddleware, AuthRequest } from "../middleware/auth";
+import { createSaleSchema } from "../validators/sale.validator";
 
 const router = Router();
 const prisma = new PrismaClient();
 
-router.post(
-  "/",
-  authMiddleware,
-
-  async (req: AuthRequest, res) => {
+/*
+========================================
+CRIAR VENDA
+========================================
+*/
+router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { items } = req.body;
-    // items = [{ productId, quantity }]
+    const storeId = req.user!.storeId;
 
-    if (!items || items.length === 0) {
-      return res.status(400).json({ error: "Itens obrigatórios" });
-    }
+    const data = createSaleSchema.parse(req.body);
 
     const result = await prisma.$transaction(async (tx) => {
+
       let total = 0;
 
-      for (const item of items) {
+      // validar produtos e calcular total
+      for (const item of data.items) {
+
         const product = await tx.product.findFirst({
-            where: {
-                id: item.productId,
-                storeId: req.user!.storeId
-  }
-});
+          where: {
+            id: item.productId,
+            storeId
+          }
+        });
 
         if (!product) {
           throw new Error("Produto não encontrado");
@@ -40,34 +42,56 @@ router.post(
         total += product.price * item.quantity;
       }
 
-      const sale = await tx.sale.create({
-  data: {
-    total,
-    storeId: req.user!.storeId
-  }
+      // validar pagamentos
+      // calcular total dos pagamentos
+let paymentsTotal = 0;
+let hasCash = false;
 
-  
-});
-
-const cash = await tx.cashRegister.findFirst({
-  where: {
-    storeId: req.user!.storeId,
-    closedAt: null
-  }
-});
-
-if (cash) {
-  await tx.cashRegister.update({
-    where: { id: cash.id },
-    data: {
-      sales: {
-        increment: total
-      }
-    }
-  });
+for (const p of data.payments) {
+  paymentsTotal += p.amount;
+  if (p.method === "CASH") hasCash = true;
 }
 
-      for (const item of items) {
+if (paymentsTotal < total) {
+  throw new Error("Valor pago é menor que o total da venda");
+}
+
+const change = paymentsTotal - total;
+
+if (change > 0 && !hasCash) {
+  throw new Error("Troco só é permitido quando há pagamento em dinheiro");
+}
+
+      // criar venda
+      const sale = await tx.sale.create({
+        data: {
+          total,
+          storeId
+        }
+      });
+
+      // atualizar caixa aberto
+      const cash = await tx.cashRegister.findFirst({
+        where: {
+          storeId,
+          closedAt: null
+        }
+      });
+
+      if (cash) {
+        await tx.cashRegister.update({
+          where: { id: cash.id },
+          data: {
+            sales: {
+              increment: total
+            }
+          }
+        });
+      }
+
+      // criar itens da venda
+      for (const item of data.items) {
+
         const product = await tx.product.findUnique({
           where: { id: item.productId }
         });
@@ -81,25 +105,46 @@ if (cash) {
           }
         });
 
+        // registrar movimento estoque
         await tx.stockMovement.create({
-  data: {
-    productId: item.productId,
-    storeId: req.user!.storeId,
-    userId: req.user!.userId,
-    type: "OUT",
-    quantity: item.quantity
-  }
-});
+          data: {
+            productId: item.productId,
+            storeId,
+            userId: req.user!.userId,
+            type: "OUT",
+            quantity: item.quantity
+          }
+        });
 
+        // reduzir estoque
         await tx.product.update({
           where: { id: item.productId },
           data: {
-            stock: product!.stock - item.quantity
+            stock: {
+              decrement: item.quantity
+            }
           }
         });
+
       }
 
+      // registrar pagamentos
+      if (data.payments && data.payments.length > 0) {
+  for (const payment of data.payments) {
+
+    await tx.payment.create({
+      data: {
+        saleId: sale.id,
+        method: payment.method,
+        amount: payment.amount
+      }
+    });
+
+  }
+}
+
       return sale;
+
     });
 
     return res.status(201).json(result);
@@ -109,55 +154,69 @@ if (cash) {
   }
 });
 
-// Listar vendas com itens e produtos
-router.get(
-  "/",
-  authMiddleware,
-  async (req: AuthRequest, res) => {
-    try {
-      const sales = await prisma.sale.findMany({
-        where: {
-          storeId: req.user!.storeId
-        },
-        include: {
-          items: {
-            include: {
-              product: true
-            }
-          }
-        },
-        orderBy: {
-          createdAt: "desc"
-        }
-      });
 
-      return res.json(sales);
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: "Erro ao listar vendas" });
-    }
-  }
-);
+/*
+========================================
+LISTAR VENDAS
+========================================
+*/
+router.get("/", authMiddleware, async (req: AuthRequest, res) => {
 
-// Relatório de vendas do dia
-router.get("/report/today", async (req, res) => {
   try {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
 
     const sales = await prisma.sale.findMany({
       where: {
-        createdAt: {
-          gte: start,
-          lte: end
+        storeId: req.user!.storeId
+      },
+      include: {
+        items: {
+          include: {
+            product: true
+          }
+        },
+        payments: true
+      },
+      orderBy: {
+        createdAt: "desc"
+      }
+    });
+
+    return res.json(sales);
+
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Erro ao listar vendas" });
+  }
+
+});
+
+
+/*
+========================================
+RELATÓRIO DO DIA
+========================================
+*/
+router.get("/report/today", authMiddleware, async (req: AuthRequest, res) => {
+
+  try {
+
+    const start = new Date();
+    start.setHours(0,0,0,0);
+
+    const end = new Date();
+    end.setHours(23,59,59,999);
+
+    const sales = await prisma.sale.findMany({
+      where:{
+        storeId: req.user!.storeId,
+        createdAt:{
+          gte:start,
+          lte:end
         }
       }
     });
 
-    const total = sales.reduce((acc, sale) => acc + sale.total, 0);
+    const total = sales.reduce((acc,s)=>acc + s.total,0);
     const count = sales.length;
     const average = count > 0 ? total / count : 0;
 
@@ -168,301 +227,255 @@ router.get("/report/today", async (req, res) => {
     });
 
   } catch (error) {
+
     console.error(error);
-    return res.status(500).json({ error: "Erro ao gerar relatório" });
+    return res.status(500).json({ error: "Erro relatório" });
+
   }
+
 });
 
-// Relatório por período
-router.get(
-  "/report",
-  authMiddleware,
-  async (req: AuthRequest, res) => {
-    try {
-      const { start, end } = req.query;
 
-      if (!start || !end) {
-        return res.status(400).json({ error: "start e end são obrigatórios" });
-      }
+/*
+========================================
+RELATÓRIO POR PERÍODO
+========================================
+*/
+router.get("/report", authMiddleware, async (req: AuthRequest, res) => {
 
-      const startDate = new Date(`${start}T00:00:00.000Z`);
-      const endDate = new Date(`${end}T23:59:59.999Z`);
+  try {
 
-      const sales = await prisma.sale.findMany({
-        where: {
-          storeId: req.user!.storeId,
-          createdAt: {
-            gte: startDate,
-            lte: endDate
-          }
-        }
-      });
+    const { start, end } = req.query;
 
-      const total = sales.reduce((acc, sale) => acc + sale.total, 0);
-      const count = sales.length;
-      const average = count > 0 ? total / count : 0;
-
-      return res.json({
-        total,
-        count,
-        average
-      });
-
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: "Erro ao gerar relatório" });
+    if (!start || !end) {
+      return res.status(400).json({ error:"start e end obrigatórios"});
     }
-  }
-);
 
-// Relatório de lucro
-router.get(
-  "/report/profit",
-  authMiddleware,
-  async (req: AuthRequest, res) => {
-    try {
-      const { start, end } = req.query;
+    const startDate = new Date(`${start}T00:00:00.000Z`);
+    const endDate = new Date(`${end}T23:59:59.999Z`);
 
-      if (!start || !end) {
-        return res.status(400).json({ error: "start e end são obrigatórios" });
-      }
-
-      const startDate = new Date(`${start}T00:00:00.000Z`);
-      const endDate = new Date(`${end}T23:59:59.999Z`);
-
-      const sales = await prisma.sale.findMany({
-        where: {
-          storeId: req.user!.storeId,
-          createdAt: {
-            gte: startDate,
-            lte: endDate
-          }
-        },
-        include: {
-          items: {
-            include: {
-              product: true
-            }
-          }
-        }
-      });
-
-      let revenue = 0;
-      let cost = 0;
-
-      for (const sale of sales) {
-        revenue += sale.total;
-
-        for (const item of sale.items) {
-          cost += item.product.cost * item.quantity;
+    const sales = await prisma.sale.findMany({
+      where:{
+        storeId:req.user!.storeId,
+        createdAt:{
+          gte:startDate,
+          lte:endDate
         }
       }
+    });
 
-      const profit = revenue - cost;
+    const total = sales.reduce((acc,s)=>acc + s.total,0);
+    const count = sales.length;
+    const average = count > 0 ? total / count : 0;
 
-      return res.json({
-        revenue,
-        cost,
-        profit
-      });
+    return res.json({
+      total,
+      count,
+      average
+    });
 
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: "Erro ao gerar relatório de lucro" });
-    }
+  } catch (error) {
+
+    console.error(error);
+    return res.status(500).json({ error:"Erro relatório"});
+
   }
-);
 
-// Dashboard consolidado
-router.get(
-  "/dashboard",
-  authMiddleware,
-  async (req: AuthRequest, res) => {
-    try {
-      const { start, end } = req.query;
-
-      if (!start || !end) {
-        return res.status(400).json({ error: "start e end são obrigatórios" });
-      }
-
-      const startDate = new Date(`${start}T00:00:00.000Z`);
-      const endDate = new Date(`${end}T23:59:59.999Z`);
-
-      const sales = await prisma.sale.findMany({
-        where: {
-          storeId: req.user!.storeId,
-          createdAt: {
-            gte: startDate,
-            lte: endDate
-          }
-        },
-        include: {
-          items: {
-            include: {
-              product: true
-            }
-          }
-        }
-      });
-
-      let revenue = 0;
-      let cost = 0;
-
-      for (const sale of sales) {
-        revenue += sale.total;
-
-        for (const item of sale.items) {
-          cost += item.product.cost * item.quantity;
-        }
-      }
-
-      const salesCount = sales.length;
-      const profit = revenue - cost;
-      const averageTicket =
-        salesCount > 0 ? revenue / salesCount : 0;
-
-      return res.json({
-        revenue,
-        cost,
-        profit,
-        salesCount,
-        averageTicket
-      });
-
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: "Erro ao gerar dashboard" });
-    }
-  }
-);
-
-// Produtos mais vendidos (otimizado com groupBy)
-router.get(
-  "/report/top-products",
-  authMiddleware,
-  async (req: AuthRequest, res) => {
-    try {
-      const { start, end } = req.query;
-
-      if (!start || !end) {
-        return res.status(400).json({ error: "start e end são obrigatórios" });
-      }
-
-      const startDate = new Date(`${start}T00:00:00.000Z`);
-      const endDate = new Date(`${end}T23:59:59.999Z`);
-
-      // Agrupar por produto
-      const result = await prisma.$queryRaw<
-  {
-    productId: string;
-    name: string;
-    quantitySold: number;
-    revenue: number;
-    profit: number;
-  }[]
->`
-SELECT 
-  si."productId" as "productId",
-  p."name" as "name",
-  SUM(si."quantity") as "quantitySold",
-  SUM(si."price" * si."quantity") as "revenue",
-  SUM((si."price" - p."cost") * si."quantity") as "profit"
-FROM "SaleItem" si
-JOIN "Sale" s ON s."id" = si."saleId"
-JOIN "Product" p ON p."id" = si."productId"
-WHERE s."storeId" = ${req.user!.storeId}
-  AND s."createdAt" BETWEEN ${startDate} AND ${endDate}
-GROUP BY si."productId", p."name"
-ORDER BY "quantitySold" DESC
-`;
-
-return res.json(result);
-
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: "Erro ao gerar ranking otimizado" });
-    }
-  }
-);
-
-router.post(
-  "/:id/cancel",
-  authMiddleware,
-  async (req: AuthRequest, res) => {
-    try {
-      const saleId = String(req.params.id);
-
-      const result = await prisma.$transaction(async (tx) => {
-
-        const sale = await tx.sale.findFirst({
-  where: {
-    id: saleId,
-    storeId: req.user!.storeId
-  },
-  include: {
-    items: true
-  }
 });
 
-        if (!sale) {
-          throw new Error("Venda não encontrada");
-        }
 
-        if (sale.status === "CANCELLED") {
-          throw new Error("Venda já cancelada");
-        }
+/*
+========================================
+CANCELAR VENDA
+========================================
+*/
+router.post("/:id/cancel", authMiddleware, async (req:AuthRequest,res)=>{
 
-        // devolver estoque
-        for (const item of sale.items) {
-          await tx.product.update({
-            where: { id: item.productId },
-            data: {
-              stock: {
-                increment: item.quantity
-              }
+  try{
+
+    const saleId = String(req.params.id);
+
+    const result = await prisma.$transaction(async(tx)=>{
+
+      const sale = await tx.sale.findFirst({
+        where:{
+          id:saleId,
+          storeId:req.user!.storeId
+        },
+        include:{
+          items:true
+        }
+      });
+
+      if(!sale){
+        throw new Error("Venda não encontrada");
+      }
+
+      if(sale.status === "CANCELLED"){
+        throw new Error("Venda já cancelada");
+      }
+
+      // devolver estoque
+      for(const item of sale.items){
+
+        await tx.product.update({
+          where:{id:item.productId},
+          data:{
+            stock:{
+              increment:item.quantity
             }
-          });
-        }
+          }
+        });
 
-        // reduzir vendas do caixa
-        const cash = await tx.cashRegister.findFirst({
-          where: {
+        await tx.stockMovement.create({
+          data:{
+            productId:item.productId,
+            storeId:req.user!.storeId,
+            userId:req.user!.userId,
+            type:"IN",
+            quantity:item.quantity
+          }
+        });
+
+      }
+
+      // atualizar caixa
+      const cash = await tx.cashRegister.findFirst({
+        where:{
+          storeId:req.user!.storeId,
+          closedAt:null
+        }
+      });
+
+      if(cash){
+
+        await tx.cashRegister.update({
+          where:{id:cash.id},
+          data:{
+            sales:{
+              decrement:sale.total
+            }
+          }
+        });
+
+      }
+
+      return await tx.sale.update({
+        where:{id:sale.id},
+        data:{
+          status:"CANCELLED"
+        }
+      });
+
+    });
+
+    return res.json(result);
+
+  }catch(error:any){
+
+    return res.status(400).json({
+      error:error.message
+    });
+
+  }
+
+});
+
+router.get(
+  "/report/payments",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+
+      const { start, end } = req.query;
+
+      let startDate: Date | undefined;
+      let endDate: Date | undefined;
+
+      if (start && end) {
+        startDate = new Date(`${start}T00:00:00.000Z`);
+        endDate = new Date(`${end}T23:59:59.999Z`);
+      }
+
+      const payments = await prisma.payment.groupBy({
+        by: ["method"],
+        where: {
+          sale: {
             storeId: req.user!.storeId,
-            closedAt: null
+            createdAt: startDate && endDate ? {
+              gte: startDate,
+              lte: endDate
+            } : undefined
           }
-        });
-
-        if (cash) {
-          await tx.cashRegister.update({
-            where: { id: cash.id },
-            data: {
-              sales: {
-                decrement: sale.total
-              }
-            }
-          });
+        },
+        _sum: {
+          amount: true
         }
-
-        // marcar venda cancelada
-        const cancelled = await tx.sale.update({
-          where: { id: sale.id },
-          data: {
-            status: "CANCELLED"
-          }
-        });
-
-        return cancelled;
-
       });
+
+      const result: Record<string, number> = {};
+
+      for (const p of payments) {
+        result[p.method] = Number(p._sum.amount || 0);
+      }
 
       return res.json(result);
 
-    } catch (error:any) {
-      return res.status(400).json({ error: error.message });
+    } catch (error) {
+
+      console.error(error);
+      return res.status(500).json({
+        error: "Erro ao gerar relatório de pagamentos"
+      });
+
     }
   }
 );
 
+router.get(
+  "/:id",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
 
+      const saleId = String(req.params.id);
+
+      const sale = await prisma.sale.findFirst({
+        where: {
+          id: saleId,
+          storeId: req.user!.storeId
+        },
+        include: {
+
+          items: {
+            include: {
+              product: true
+            }
+          },
+
+          payments: true
+
+        }
+      });
+
+      if (!sale) {
+        return res.status(404).json({
+          error: "Venda não encontrada"
+        });
+      }
+
+      return res.json(sale);
+
+    } catch (error) {
+
+      console.error(error);
+
+      return res.status(500).json({
+        error: "Erro ao buscar venda"
+      });
+
+    }
+  }
+);
 
 export default router;

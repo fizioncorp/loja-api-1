@@ -85,6 +85,46 @@ router.post(
   }
 );
 
+
+router.get(
+  "/current",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+
+      const cash = await prisma.cashRegister.findFirst({
+        where: {
+          storeId: req.user!.storeId,
+          closedAt: null
+        }
+      });
+
+      if (!cash) {
+        return res.status(404).json({
+          error: "Nenhum caixa aberto"
+        });
+      }
+
+      return res.json({
+        id: cash.id,
+        openedAt: cash.openedAt,
+        initial: cash.initial,
+        sales: cash.sales,
+        expectedCash: cash.initial + cash.sales
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      return res.status(500).json({
+        error: "Erro ao buscar caixa atual"
+      });
+
+    }
+  }
+);
+
 router.get(
   "/history",
   authMiddleware,
@@ -116,6 +156,91 @@ router.get(
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: "Erro ao buscar histórico de caixa" });
+    }
+  }
+);
+
+router.post(
+  "/withdraw",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const { amount, reason } = req.body;
+
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ error: "Valor inválido" });
+      }
+
+      const cash = await prisma.cashRegister.findFirst({
+        where: {
+          storeId: req.user!.storeId,
+          closedAt: null
+        }
+      });
+
+      if (!cash) {
+        return res.status(400).json({ error: "Nenhum caixa aberto" });
+      }
+
+      const movement = await prisma.cashMovement.create({
+        data: {
+          storeId: req.user!.storeId,
+          userId: req.user!.userId,
+          cashId: cash.id,
+          type: "WITHDRAW",
+          amount,
+          reason
+        }
+      });
+
+      return res.json(movement);
+
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Erro ao registrar sangria" });
+    }
+  }
+);
+
+
+router.post(
+  "/deposit",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const { amount, reason } = req.body;
+
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ error: "Valor inválido" });
+      }
+
+      const cash = await prisma.cashRegister.findFirst({
+        where: {
+          storeId: req.user!.storeId,
+          closedAt: null
+        }
+      });
+
+      if (!cash) {
+        return res.status(400).json({ error: "Nenhum caixa aberto" });
+      }
+
+      const movement = await prisma.cashMovement.create({
+        data: {
+          storeId: req.user!.storeId,
+          userId: req.user!.userId,
+          cashId: cash.id,
+          type: "DEPOSIT",
+          amount,
+          reason
+        }
+      });
+
+      return res.json(movement);
+
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Erro ao registrar suprimento" });
     }
   }
 );

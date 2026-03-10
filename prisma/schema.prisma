@@ -53,9 +53,9 @@ model Sale {
   store     Store    @relation(fields: [storeId], references: [id])
   createdAt DateTime @default(now())
 
-  items  SaleItem[]
+  items    SaleItem[]
   payments Payment[]
-  status String     @default("COMPLETED")
+  status   String     @default("COMPLETED")
 }
 
 model SaleItem {
@@ -102,9 +102,9 @@ model CashRegister {
   initial  Float
   sales    Float     @default(0)
 
-  store Store @relation(fields: [storeId], references: [id])
+  store     Store          @relation(fields: [storeId], references: [id])
+  movements CashMovement[]
 }
-
 
 enum PaymentMethod {
   PIX
@@ -113,12 +113,29 @@ enum PaymentMethod {
 }
 
 model Payment {
-  id        String   @id @default(cuid())
+  id        String        @id @default(cuid())
   saleId    String
   method    PaymentMethod
   amount    Decimal
-  createdAt DateTime @default(now())
+  createdAt DateTime      @default(now())
 
   sale Sale @relation(fields: [saleId], references: [id])
 }
 
+model CashMovement {
+  id        String           @id @default(cuid())
+  storeId   String
+  userId    String
+  cashId    String
+  type      CashMovementType
+  amount    Decimal
+  reason    String?
+  createdAt DateTime         @default(now())
+
+  cash CashRegister @relation(fields: [cashId], references: [id])
+}
+
+enum CashMovementType {
+  WITHDRAW
+  DEPOSIT
+}
